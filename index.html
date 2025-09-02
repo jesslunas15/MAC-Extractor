@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Excel Processor - Grouped Output</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background: #f2f2f2; }
+    button { margin-top: 15px; padding: 8px 12px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h2>Upload Excel File</h2>
+  <input type="file" id="excelFile" accept=".xlsx, .xls">
+  <div id="table-container"></div>
+  <button id="downloadBtn" style="display:none;">Download Processed Excel</button>
+
+  <!-- SheetJS library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+  <script>
+    let processedData = [];
+
+    document.getElementById('excelFile').addEventListener('change', handleFile, false);
+    document.getElementById('downloadBtn').addEventListener('click', downloadExcel);
+
+    function handleFile(e) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function(event) {
+        const data = new Uint8Array(event.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        let rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+        // Extract only column 2 (index 1) and column 5 (index 4)
+        let filtered = rows.map(row => [row[1], row[4]]);
+
+        // Remove header row if needed
+        if (!filtered[0][1]) filtered.shift();
+
+        // Group by column 5 (SSID)
+        let groups = {};
+        filtered.forEach((row, i) => {
+          if (i === 0) return; // skip header if present
+          const mac = row[0];
+          const ssid = row[1];
+          if (!ssid || !mac) return;
+          if (!groups[ssid]) groups[ssid] = [];
+          if (!groups[ssid].includes(mac)) {
+            groups[ssid].push(mac);
+          }
+        });
+
+        // Keep only SSIDs that contain the word "free"
+        let ssids = Object.keys(groups).filter(ssid => ssid.toLowerCase().includes("free"));
+        ssids.sort((a, b) => a.localeCompare(b));
+
+        // Find max length of MAC lists
+        let maxLen = Math.max(...ssids.map(k => groups[k].length));
+
+        // Build table-like 2D array
+        processedData = [];
+        processedData.push(ssids); // headers row
+        for (let i = 0; i < maxLen; i++) {
+          let row = [];
+          ssids.forEach(ssid => {
+            row.push(groups[ssid][i] || "");
+          });
+          processedData.push(row);
+        }
+
+        renderTable(processedData);
+        document.getElementById('downloadBtn').style.display = 'inline-block';
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    function renderTable(data) {
+      let html = '<table>';
+      data.forEach((row, i) => {
+        html += '<tr>';
+        row.forEach(cell => {
+          html += i === 0 ? `<th>${cell ?? ''}</th>` : `<td>${cell ?? ''}</td>`;
+        });
+        html += '</tr>';
+      });
+      html += '</table>';
+      document.getElementById('table-container').innerHTML = html;
+    }
+
+    function downloadExcel() {
+      const ws = XLSX.utils.aoa_to_sheet(processedData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Processed');
+      XLSX.writeFile(wb, 'processed_output.xlsx');
+    }
+  </script>
+</body>
+</html>
