@@ -2,100 +2,87 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Excel Processor - Grouped Output</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Excel Processor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-    th { background: #f2f2f2; }
-    button { margin-top: 15px; padding: 8px 12px; cursor: pointer; }
+    .top-buttons { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-bottom: 20px; }
+    .download-btn { padding: 8px 14px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; }
+    .download-btn:hover { background: #0056b3; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 30px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background-color: #f4f4f4; }
   </style>
 </head>
 <body>
-  <h2>Upload Excel File</h2>
-  <input type="file" id="excelFile" accept=".xlsx, .xls">
-  <div id="table-container"></div>
-  <button id="downloadBtn" style="display:none;">Download Processed Excel</button>
-
-  <!-- SheetJS library -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <h2>Upload Excel Files</h2>
+  <input type="file" id="upload" multiple accept=".xlsx,.xls">
+  
+  <div class="top-buttons" id="downloadButtons"></div>
+  <div id="output"></div>
 
   <script>
-    let processedData = [];
+    document.getElementById('upload').addEventListener('change', handleFiles, false);
 
-    document.getElementById('excelFile').addEventListener('change', handleFile, false);
-    document.getElementById('downloadBtn').addEventListener('click', downloadExcel);
+    function handleFiles(event) {
+      const files = event.target.files;
+      const downloadButtonsDiv = document.getElementById('downloadButtons');
+      const output = document.getElementById('output');
+      downloadButtonsDiv.innerHTML = "";
+      output.innerHTML = "";
 
-    function handleFile(e) {
-      const file = e.target.files[0];
-      const reader = new FileReader();
-      reader.onload = function(event) {
-        const data = new Uint8Array(event.target.result);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        let rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      Array.from(files).forEach(file => {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
-        // Extract only column 2 (index 1) and column 5 (index 4)
-        let filtered = rows.map(row => [row[1], row[4]]);
+          const col2 = rows.map(r => r[1]);
+          const col5 = rows.map(r => r[4]);
 
-        // Remove header row if needed
-        if (!filtered[0][1]) filtered.shift();
-
-        // Group by column 5 (SSID)
-        let groups = {};
-        filtered.forEach((row, i) => {
-          if (i === 0) return; // skip header if present
-          const mac = row[0];
-          const ssid = row[1];
-          if (!ssid || !mac) return;
-          if (!groups[ssid]) groups[ssid] = [];
-          if (!groups[ssid].includes(mac)) {
-            groups[ssid].push(mac);
+          let groups = {};
+          for (let i = 1; i < rows.length; i++) {
+            if (col2[i] && col5[i] && col5[i].toString().toLowerCase().includes("free")) {
+              if (!groups[col5[i]]) groups[col5[i]] = [];
+              if (!groups[col5[i]].includes(col2[i])) groups[col5[i]].push(col2[i]);
+            }
           }
-        });
 
-        // Keep only SSIDs that contain the word "free"
-        let ssids = Object.keys(groups).filter(ssid => ssid.toLowerCase().includes("free"));
-        ssids.sort((a, b) => a.localeCompare(b));
+          const headers = Object.keys(groups).sort();
+          const maxLength = Math.max(...headers.map(h => groups[h].length));
 
-        // Find max length of MAC lists
-        let maxLen = Math.max(...ssids.map(k => groups[k].length));
+          let table = `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
+          for (let i = 0; i < maxLength; i++) {
+            table += "<tr>";
+            headers.forEach(h => {
+              table += `<td>${groups[h][i] || ""}</td>`;
+            });
+            table += "</tr>";
+          }
+          table += "</tbody></table>";
+          output.innerHTML += table;
 
-        // Build table-like 2D array
-        processedData = [];
-        processedData.push(ssids); // headers row
-        for (let i = 0; i < maxLen; i++) {
-          let row = [];
-          ssids.forEach(ssid => {
-            row.push(groups[ssid][i] || "");
-          });
-          processedData.push(row);
-        }
+          // Prepare worksheet for download
+          const newSheetData = [headers];
+          for (let i = 0; i < maxLength; i++) {
+            newSheetData.push(headers.map(h => groups[h][i] || ""));
+          }
+          const newSheet = XLSX.utils.aoa_to_sheet(newSheetData);
+          const newWb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(newWb, newSheet, "Processed");
 
-        renderTable(processedData);
-        document.getElementById('downloadBtn').style.display = 'inline-block';
-      };
-      reader.readAsArrayBuffer(file);
-    }
-
-    function renderTable(data) {
-      let html = '<table>';
-      data.forEach((row, i) => {
-        html += '<tr>';
-        row.forEach(cell => {
-          html += i === 0 ? `<th>${cell ?? ''}</th>` : `<td>${cell ?? ''}</td>`;
-        });
-        html += '</tr>';
+          // Add download button at top with file name
+          const downloadBtn = document.createElement("button");
+          downloadBtn.className = "download-btn";
+          downloadBtn.textContent = file.name.replace(/\.[^/.]+$/, "") + "_processed.xlsx";
+          downloadBtn.onclick = () => XLSX.writeFile(newWb, file.name.replace(/\.[^/.]+$/, "") + "_processed.xlsx");
+          downloadButtonsDiv.appendChild(downloadBtn);
+        };
+        reader.readAsArrayBuffer(file);
       });
-      html += '</table>';
-      document.getElementById('table-container').innerHTML = html;
-    }
-
-    function downloadExcel() {
-      const ws = XLSX.utils.aoa_to_sheet(processedData);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Processed');
-      XLSX.writeFile(wb, 'processed_output.xlsx');
     }
   </script>
 </body>
