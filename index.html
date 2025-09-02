@@ -2,87 +2,161 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Excel Processor</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    .top-buttons { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-bottom: 20px; }
-    .download-btn { padding: 8px 14px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; }
-    .download-btn:hover { background: #0056b3; }
-    table { border-collapse: collapse; width: 100%; margin-bottom: 30px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    th { background-color: #f4f4f4; }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    #downloadContainer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-start;
+      margin-bottom: 20px;
+    }
+    .download-btn {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .download-btn:hover {
+      background: #0056b3;
+    }
+    table {
+      border-collapse: collapse;
+      margin-top: 10px;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px;
+      text-align: left;
+    }
+    th {
+      background: #f5f5f5;
+    }
   </style>
 </head>
 <body>
-  <h2>Upload Excel Files</h2>
-  <input type="file" id="upload" multiple accept=".xlsx,.xls">
-  
-  <div class="top-buttons" id="downloadButtons"></div>
+  <h2>Excel Processor</h2>
+  <input type="file" id="upload" multiple accept=".xlsx,.xls,.zip" />
+  <div id="downloadContainer"></div>
   <div id="output"></div>
 
   <script>
-    document.getElementById('upload').addEventListener('change', handleFiles, false);
+    document.getElementById('upload').addEventListener('change', handleFiles);
 
-    function handleFiles(event) {
-      const files = event.target.files;
-      const downloadButtonsDiv = document.getElementById('downloadButtons');
-      const output = document.getElementById('output');
-      downloadButtonsDiv.innerHTML = "";
-      output.innerHTML = "";
+    async function handleFiles(event) {
+      const files = Array.from(event.target.files);
+      document.getElementById('downloadContainer').innerHTML = "";
+      document.getElementById('output').innerHTML = "";
 
-      Array.from(files).forEach(file => {
-        const reader = new FileReader();
-        reader.onload = function(e) {
-          const data = new Uint8Array(e.target.result);
-          const workbook = XLSX.read(data, { type: 'array' });
-          const sheet = workbook.Sheets[workbook.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      for (const file of files) {
+        if (file.name.endsWith(".zip")) {
+          const zip = await JSZip.loadAsync(file);
+          const excelFiles = Object.keys(zip.files).filter(fn => fn.endsWith(".xlsx") || fn.endsWith(".xls"));
 
-          const col2 = rows.map(r => r[1]);
-          const col5 = rows.map(r => r[4]);
-
-          let groups = {};
-          for (let i = 1; i < rows.length; i++) {
-            if (col2[i] && col5[i] && col5[i].toString().toLowerCase().includes("free")) {
-              if (!groups[col5[i]]) groups[col5[i]] = [];
-              if (!groups[col5[i]].includes(col2[i])) groups[col5[i]].push(col2[i]);
-            }
+          let allRows = [];
+          for (const filename of excelFiles) {
+            const content = await zip.files[filename].async("blob");
+            const rows = await extractRows(content);
+            allRows = allRows.concat(rows);
           }
 
-          const headers = Object.keys(groups).sort();
-          const maxLength = Math.max(...headers.map(h => groups[h].length));
+          const zipBase = file.name.replace(/\.zip$/i, "");
+          await processRows(allRows, zipBase);
 
-          let table = `<table><thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
-          for (let i = 0; i < maxLength; i++) {
-            table += "<tr>";
-            headers.forEach(h => {
-              table += `<td>${groups[h][i] || ""}</td>`;
-            });
-            table += "</tr>";
-          }
-          table += "</tbody></table>";
-          output.innerHTML += table;
+        } else if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
+          const rows = await extractRows(file);
+          const baseName = file.name.replace(/\.xlsx|\.xls/i, "");
+          await processRows(rows, baseName);
+        }
+      }
+    }
 
-          // Prepare worksheet for download
-          const newSheetData = [headers];
-          for (let i = 0; i < maxLength; i++) {
-            newSheetData.push(headers.map(h => groups[h][i] || ""));
-          }
-          const newSheet = XLSX.utils.aoa_to_sheet(newSheetData);
-          const newWb = XLSX.utils.book_new();
-          XLSX.utils.book_append_sheet(newWb, newSheet, "Processed");
+    async function extractRows(file) {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      return XLSX.utils.sheet_to_json(sheet, { header: 1 });
+    }
 
-          // Add download button at top with file name
-          const downloadBtn = document.createElement("button");
-          downloadBtn.className = "download-btn";
-          downloadBtn.textContent = file.name.replace(/\.[^/.]+$/, "") + "_processed.xlsx";
-          downloadBtn.onclick = () => XLSX.writeFile(newWb, file.name.replace(/\.[^/.]+$/, "") + "_processed.xlsx");
-          downloadButtonsDiv.appendChild(downloadBtn);
-        };
-        reader.readAsArrayBuffer(file);
+    async function processRows(rows, baseName) {
+      // Keep only Column 2 and Column 5
+      let filtered = rows.map(r => [r[1], r[4]]).filter(r => r[0] && r[1]);
+
+      // Group by Column 5
+      const groups = {};
+      filtered.forEach(([col2, col5]) => {
+        if (!groups[col5]) groups[col5] = [];
+        groups[col5].push(col2);
       });
+
+      // Only keep groups where Column 5 contains "free"
+      const filteredGroups = Object.keys(groups)
+        .filter(key => key.toLowerCase().includes("free"))
+        .sort()
+        .reduce((obj, key) => {
+          obj[key] = groups[key];
+          return obj;
+        }, {});
+
+      // Prepare table display
+      const headers = Object.keys(filteredGroups);
+      const maxRows = Math.max(...Object.values(filteredGroups).map(arr => arr.length), 0);
+
+      const table = document.createElement("table");
+      const thead = document.createElement("thead");
+      const trHead = document.createElement("tr");
+      headers.forEach(h => {
+        const th = document.createElement("th");
+        th.textContent = h;
+        trHead.appendChild(th);
+      });
+      thead.appendChild(trHead);
+      table.appendChild(thead);
+
+      const tbody = document.createElement("tbody");
+      for (let i = 0; i < maxRows; i++) {
+        const tr = document.createElement("tr");
+        headers.forEach(h => {
+          const td = document.createElement("td");
+          td.textContent = filteredGroups[h][i] || "";
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+
+      document.getElementById("output").appendChild(table);
+
+      // Export to Excel
+      const wsData = [headers];
+      for (let i = 0; i < maxRows; i++) {
+        wsData.push(headers.map(h => filteredGroups[h][i] || ""));
+      }
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Processed");
+
+      const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+
+      // Create download button
+      const url = URL.createObjectURL(blob);
+      const btn = document.createElement("a");
+      btn.href = url;
+      btn.download = baseName + "_processed.xlsx";
+      btn.textContent = btn.download;
+      btn.className = "download-btn";
+      document.getElementById("downloadContainer").appendChild(btn);
     }
   </script>
 </body>
