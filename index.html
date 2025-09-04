@@ -6,158 +6,138 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 20px;
-    }
-    #downloadContainer {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      justify-content: flex-start;
-      margin-bottom: 20px;
-    }
-    .download-btn {
-      background: #007bff;
-      color: white;
-      border: none;
-      padding: 8px 12px;
-      border-radius: 6px;
-      cursor: pointer;
-      text-decoration: none;
-    }
-    .download-btn:hover {
-      background: #0056b3;
-    }
-    table {
-      border-collapse: collapse;
-      margin-top: 10px;
-      width: 100%;
-    }
-    th, td {
-      border: 1px solid #ccc;
-      padding: 6px;
-      text-align: left;
-    }
-    th {
-      background: #f5f5f5;
-    }
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #downloadContainer { margin: 20px 0; }
+    .download-btn { background:#007bff; color:white; border:none; padding:8px 12px; border-radius:6px; cursor:pointer; text-decoration:none; }
+    .download-btn:hover { background:#0056b3; }
+    input[type="text"] { padding:6px; border:1px solid #ccc; border-radius:4px; margin-bottom:10px; }
+    table { border-collapse:collapse; margin-top:10px; width:100%; }
+    th, td { border:1px solid #ccc; padding:6px; text-align:left; }
+    th { background:#f5f5f5; }
   </style>
 </head>
 <body>
   <h2>Excel Processor</h2>
+  <input type="text" id="dataName" placeholder="Enter data name" />
+  <br>
   <input type="file" id="upload" multiple accept=".xlsx,.xls,.zip" />
   <div id="downloadContainer"></div>
   <div id="output"></div>
 
   <script>
-    document.getElementById('upload').addEventListener('change', handleFiles);
+  document.getElementById('upload').addEventListener('change', handleFiles);
 
-    async function handleFiles(event) {
-      const files = Array.from(event.target.files);
-      document.getElementById('downloadContainer').innerHTML = "";
-      document.getElementById('output').innerHTML = "";
+  async function handleFiles(event) {
+    const files = Array.from(event.target.files);
+    const downloadContainer = document.getElementById('downloadContainer');
+    const output = document.getElementById('output');
+    downloadContainer.innerHTML = "";
+    output.innerHTML = "";
 
-      for (const file of files) {
-        if (file.name.endsWith(".zip")) {
-          const zip = await JSZip.loadAsync(file);
-          const excelFiles = Object.keys(zip.files).filter(fn => fn.endsWith(".xlsx") || fn.endsWith(".xls"));
+    const customName = document.getElementById("dataName").value.trim() || "DATA";
 
-          let allRows = [];
-          for (const filename of excelFiles) {
-            const content = await zip.files[filename].async("blob");
-            const rows = await extractRows(content);
-            allRows = allRows.concat(rows);
-          }
+    if (!files.length) return;
 
-          const zipBase = file.name.replace(/\.zip$/i, "");
-          await processRows(allRows, zipBase);
+    const zip = new JSZip();
 
-        } else if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
-          const rows = await extractRows(file);
-          const baseName = file.name.replace(/\.xlsx|\.xls/i, "");
-          await processRows(rows, baseName);
+    for (const file of files) {
+      let allRows = [];
+      if (/\.zip$/i.test(file.name)) {
+        const zipFile = await JSZip.loadAsync(file);
+        const excelFiles = Object.keys(zipFile.files).filter(fn => fn.match(/\.(xlsx|xls)$/i));
+        for (const filename of excelFiles) {
+          const content = await zipFile.files[filename].async("blob");
+          const rows = await extractRows(content);
+          allRows = allRows.concat(rows);
+        }
+      } else if (/\.(xlsx|xls)$/i.test(file.name)) {
+        const rows = await extractRows(file);
+        allRows = allRows.concat(rows);
+      }
+
+      if (allRows.length) {
+        const dayFiles = await processRowsByDay(allRows, customName);
+        for (const {day, blob} of dayFiles) {
+          zip.file(`${day}_${customName}.xlsx`, blob);
         }
       }
     }
 
-    async function extractRows(file) {
-      const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data, { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      return XLSX.utils.sheet_to_json(sheet, { header: 1 });
+    const zipBlob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(zipBlob);
+    const btn = document.createElement("a");
+    btn.href = url;
+    btn.download = "processed_files.zip";
+    btn.textContent = "Download All Processed Files";
+    btn.className = "download-btn";
+    btn.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 1500));
+    downloadContainer.appendChild(btn);
+  }
+
+  async function extractRows(fileBlob) {
+    const data = await fileBlob.arrayBuffer();
+    const workbook = XLSX.read(data, { type: "array" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  }
+
+  async function processRowsByDay(rows, customName) {
+    const macRegex = /^[0-9A-F]{2}([:-][0-9A-F]{2}){5}$/i;
+    let firstMacIndex = -1;
+    for (let i = 0; i < Math.min(10, rows.length); i++) {
+      const cell = rows[i] && rows[i][1];
+      if (typeof cell === "string" && macRegex.test(cell.trim())) {
+        firstMacIndex = i;
+        break;
+      }
     }
+    const dataStart = firstMacIndex >= 0 ? firstMacIndex : 1;
+    const dataRows = rows.slice(dataStart).filter(r => Array.isArray(r));
 
-    async function processRows(rows, baseName) {
-      // Keep only Column 2 and Column 5
-      let filtered = rows.map(r => [r[1], r[4]]).filter(r => r[0] && r[1]);
+    // Group rows by day from column 6
+    const dayGroups = {};
+    dataRows.forEach(r => {
+      const mac = (r[1] || "").toString().trim();
+      const ap = (r[4] || "").toString().trim();
+      const timestamp = (r[5] || "").toString().trim();
+      const dayMatch = timestamp.match(/^\d{4}-\d{2}-(\d{2})/);
+      if (mac && ap && timestamp && dayMatch) {
+        const day = dayMatch[1];
+        if (!dayGroups[day]) dayGroups[day] = [];
+        dayGroups[day].push([mac, ap]);
+      }
+    });
 
-      // Group by Column 5
+    const files = [];
+
+    for (const day of Object.keys(dayGroups).sort()) {
+      const mapped = dayGroups[day];
+
       const groups = {};
-      filtered.forEach(([col2, col5]) => {
-        if (!groups[col5]) groups[col5] = [];
-        groups[col5].push(col2);
+      mapped.forEach(([mac, ap]) => {
+        if (!ap.toLowerCase().includes("free")) return;
+        if (!groups[ap]) groups[ap] = new Set();
+        groups[ap].add(mac);
       });
 
-      // Only keep groups where Column 5 contains "free"
-      const filteredGroups = Object.keys(groups)
-        .filter(key => key.toLowerCase().includes("free"))
-        .sort()
-        .reduce((obj, key) => {
-          obj[key] = groups[key];
-          return obj;
-        }, {});
-
-      // Prepare table display
-      const headers = Object.keys(filteredGroups);
-      const maxRows = Math.max(...Object.values(filteredGroups).map(arr => arr.length), 0);
-
-      const table = document.createElement("table");
-      const thead = document.createElement("thead");
-      const trHead = document.createElement("tr");
-      headers.forEach(h => {
-        const th = document.createElement("th");
-        th.textContent = h;
-        trHead.appendChild(th);
-      });
-      thead.appendChild(trHead);
-      table.appendChild(thead);
-
-      const tbody = document.createElement("tbody");
-      for (let i = 0; i < maxRows; i++) {
-        const tr = document.createElement("tr");
-        headers.forEach(h => {
-          const td = document.createElement("td");
-          td.textContent = filteredGroups[h][i] || "";
-          tr.appendChild(td);
-        });
-        tbody.appendChild(tr);
+      const wsData = [];
+      for (const apName of Object.keys(groups).sort()) {
+        groups[apName].forEach(mac => wsData.push([apName, mac]));
       }
-      table.appendChild(tbody);
 
-      document.getElementById("output").appendChild(table);
+      if (wsData.length > 0) {
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Processed");
+        const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+        const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 
-      // Export to Excel
-      const wsData = [headers];
-      for (let i = 0; i < maxRows; i++) {
-        wsData.push(headers.map(h => filteredGroups[h][i] || ""));
+        files.push({ day, blob });
       }
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Processed");
-
-      const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-      const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-
-      // Create download button
-      const url = URL.createObjectURL(blob);
-      const btn = document.createElement("a");
-      btn.href = url;
-      btn.download = baseName + "_processed.xlsx";
-      btn.textContent = btn.download;
-      btn.className = "download-btn";
-      document.getElementById("downloadContainer").appendChild(btn);
     }
+
+    return files;
+  }
   </script>
 </body>
 </html>
