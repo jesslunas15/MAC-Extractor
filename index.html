@@ -25,119 +25,138 @@
   <div id="output"></div>
 
   <script>
-  document.getElementById('upload').addEventListener('change', handleFiles);
+document.getElementById('upload').addEventListener('change', handleFiles);
 
-  async function handleFiles(event) {
-    const files = Array.from(event.target.files);
-    const downloadContainer = document.getElementById('downloadContainer');
-    const output = document.getElementById('output');
-    downloadContainer.innerHTML = "";
-    output.innerHTML = "";
+async function handleFiles(event) {
+  const files = Array.from(event.target.files);
+  const downloadContainer = document.getElementById('downloadContainer');
+  downloadContainer.innerHTML = "";
 
-    const customName = document.getElementById("dataName").value.trim() || "DATA";
+  const customName = document.getElementById("dataName").value.trim() || "DATA";
 
-    if (!files.length) return;
+  if (!files.length) return;
 
-    const zip = new JSZip();
+  const finalZip = new JSZip();
 
-    for (const file of files) {
-      let allRows = [];
-      if (/\.zip$/i.test(file.name)) {
-        const zipFile = await JSZip.loadAsync(file);
-        const excelFiles = Object.keys(zipFile.files).filter(fn => fn.match(/\.(xlsx|xls)$/i));
-        for (const filename of excelFiles) {
-          const content = await zipFile.files[filename].async("blob");
-          const rows = await extractRows(content);
-          allRows = allRows.concat(rows);
-        }
-      } else if (/\.(xlsx|xls)$/i.test(file.name)) {
-        const rows = await extractRows(file);
-        allRows = allRows.concat(rows);
-      }
+  for (const file of files) {
+    if (/\.zip$/i.test(file.name)) {
+      // process a .zip file separately
+      const parentZip = await JSZip.loadAsync(file);
+      const excelFiles = Object.keys(parentZip.files).filter(fn => fn.match(/\.(xlsx|xls)$/i));
+      let innerZip = new JSZip();
+      let fileCount = 0;
 
-      if (allRows.length) {
-        const dayFiles = await processRowsByDay(allRows, customName);
+      for (const filename of excelFiles) {
+        const content = await parentZip.files[filename].async("blob");
+        const rows = await extractRows(content);
+        const dayFiles = await processRowsByDay(rows, customName);
+
         for (const {day, blob} of dayFiles) {
-          zip.file(`${day}_${customName}.xlsx`, blob);
+          innerZip.file(`${day}_${customName}.xlsx`, blob);
+          fileCount++;
         }
       }
-    }
 
-    const zipBlob = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(zipBlob);
-    const btn = document.createElement("a");
-    btn.href = url;
-    btn.download = "processed_files.zip";
-    btn.textContent = "Download All Processed Files";
-    btn.className = "download-btn";
-    btn.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 1500));
-    downloadContainer.appendChild(btn);
-  }
+      if (fileCount > 1) {
+        const zipBlob = await innerZip.generateAsync({ type: "blob" });
+        finalZip.file(`${file.name.replace(/\.zip$/i, '')}_processed.zip`, zipBlob);
+      } else if (fileCount === 1) {
+        // only one file, store directly
+        const content = await innerZip.generateAsync({ type: "blob" });
+        finalZip.file(`${file.name.replace(/\.zip$/i, '')}_${customName}.xlsx`, content);
+      }
 
-  async function extractRows(fileBlob) {
-    const data = await fileBlob.arrayBuffer();
-    const workbook = XLSX.read(data, { type: "array" });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-  }
+    } else if (/\.(xlsx|xls)$/i.test(file.name)) {
+      // process standalone excel
+      const rows = await extractRows(file);
+      const dayFiles = await processRowsByDay(rows, customName);
 
-  async function processRowsByDay(rows, customName) {
-    const macRegex = /^[0-9A-F]{2}([:-][0-9A-F]{2}){5}$/i;
-    let firstMacIndex = -1;
-    for (let i = 0; i < Math.min(10, rows.length); i++) {
-      const cell = rows[i] && rows[i][1];
-      if (typeof cell === "string" && macRegex.test(cell.trim())) {
-        firstMacIndex = i;
-        break;
+      if (dayFiles.length > 1) {
+        let innerZip = new JSZip();
+        for (const {day, blob} of dayFiles) {
+          innerZip.file(`${day}_${customName}.xlsx`, blob);
+        }
+        const zipBlob = await innerZip.generateAsync({ type: "blob" });
+        finalZip.file(`${file.name.replace(/\.(xlsx|xls)$/i, '')}_processed.zip`, zipBlob);
+      } else if (dayFiles.length === 1) {
+        finalZip.file(`${dayFiles[0].day}_${customName}.xlsx`, dayFiles[0].blob);
       }
     }
-    const dataStart = firstMacIndex >= 0 ? firstMacIndex : 1;
-    const dataRows = rows.slice(dataStart).filter(r => Array.isArray(r));
+  }
 
-    // Group rows by day from column 6
-    const dayGroups = {};
-    dataRows.forEach(r => {
-      const mac = (r[1] || "").toString().trim();
-      const ap = (r[4] || "").toString().trim();
-      const timestamp = (r[5] || "").toString().trim();
-      const dayMatch = timestamp.match(/^\d{4}-\d{2}-(\d{2})/);
-      if (mac && ap && timestamp && dayMatch) {
-        const day = dayMatch[1];
-        if (!dayGroups[day]) dayGroups[day] = [];
-        dayGroups[day].push([mac, ap]);
-      }
+  // Generate final output
+  const finalBlob = await finalZip.generateAsync({ type: "blob" });
+  const url = URL.createObjectURL(finalBlob);
+  const btn = document.createElement("a");
+  btn.href = url;
+  btn.download = "all_processed_files.zip";
+  btn.textContent = "Download All Processed Files";
+  btn.className = "download-btn";
+  btn.addEventListener('click', () => setTimeout(() => URL.revokeObjectURL(url), 1500));
+  downloadContainer.appendChild(btn);
+}
+
+async function extractRows(fileBlob) {
+  const data = await fileBlob.arrayBuffer();
+  const workbook = XLSX.read(data, { type: "array" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+}
+
+async function processRowsByDay(rows, customName) {
+  const macRegex = /^[0-9A-F]{2}([:-][0-9A-F]{2}){5}$/i;
+  let firstMacIndex = -1;
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const cell = rows[i] && rows[i][1];
+    if (typeof cell === "string" && macRegex.test(cell.trim())) {
+      firstMacIndex = i;
+      break;
+    }
+  }
+  const dataStart = firstMacIndex >= 0 ? firstMacIndex : 1;
+  const dataRows = rows.slice(dataStart).filter(r => Array.isArray(r));
+
+  const dayGroups = {};
+  dataRows.forEach(r => {
+    const mac = (r[1] || "").toString().trim();
+    const ap = (r[4] || "").toString().trim();
+    const timestamp = (r[5] || "").toString().trim();
+    const dayMatch = timestamp.match(/^\d{4}-\d{2}-(\d{2})/);
+    if (mac && ap && timestamp && dayMatch) {
+      const day = dayMatch[1];
+      if (!dayGroups[day]) dayGroups[day] = [];
+      dayGroups[day].push([mac, ap]);
+    }
+  });
+
+  const files = [];
+
+  for (const day of Object.keys(dayGroups).sort()) {
+    const mapped = dayGroups[day];
+    const groups = {};
+    mapped.forEach(([mac, ap]) => {
+      if (!ap.toLowerCase().includes("free")) return;
+      if (!groups[ap]) groups[ap] = new Set();
+      groups[ap].add(mac);
     });
 
-    const files = [];
-
-    for (const day of Object.keys(dayGroups).sort()) {
-      const mapped = dayGroups[day];
-
-      const groups = {};
-      mapped.forEach(([mac, ap]) => {
-        if (!ap.toLowerCase().includes("free")) return;
-        if (!groups[ap]) groups[ap] = new Set();
-        groups[ap].add(mac);
-      });
-
-      const wsData = [];
-      for (const apName of Object.keys(groups).sort()) {
-        groups[apName].forEach(mac => wsData.push([apName, mac]));
-      }
-
-      if (wsData.length > 0) {
-        const ws = XLSX.utils.aoa_to_sheet(wsData);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Processed");
-        const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-        const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-
-        files.push({ day, blob });
-      }
+    const wsData = [];
+    for (const apName of Object.keys(groups).sort()) {
+      groups[apName].forEach(mac => wsData.push([apName, mac]));
     }
 
-    return files;
+    if (wsData.length > 0) {
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Processed");
+      const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+      const blob = new Blob([wbout], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      files.push({ day, blob });
+    }
   }
-  </script>
+  return files;
+}
+</script>
+
 </body>
 </html>
