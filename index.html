@@ -33,14 +33,13 @@ async function handleFiles(event) {
   downloadContainer.innerHTML = "";
 
   const customName = document.getElementById("dataName").value.trim() || "DATA";
-
   if (!files.length) return;
 
-  const finalZip = new JSZip();
+  // Step 1: Gather all outputs into temp storage
+  const tempFiles = {}; // { filename: Blob }
 
   for (const file of files) {
     if (/\.zip$/i.test(file.name)) {
-      // process a .zip file separately
       const parentZip = await JSZip.loadAsync(file);
       const excelFiles = Object.keys(parentZip.files).filter(fn => fn.match(/\.(xlsx|xls)$/i));
       const innerZip = new JSZip();
@@ -49,27 +48,18 @@ async function handleFiles(event) {
         const content = await parentZip.files[filename].async("blob");
         const rows = await extractRows(content);
         const dayFiles = await processRowsByDay(rows, customName);
-
         for (const {day, blob} of dayFiles) {
           innerZip.file(`${day}_${customName}.xlsx`, blob);
         }
       }
 
       const filesInside = Object.keys(innerZip.files).length;
-
-      if (filesInside > 1) {
-        // Save as a .zip inside the final zip
+      if (filesInside > 0) {
         const zipBlob = await innerZip.generateAsync({ type: "blob" });
-        finalZip.file(`${file.name.replace(/\.zip$/i, '')}_processed.zip`, zipBlob);
-      } else if (filesInside === 1) {
-        // Save the single .xlsx directly in the final zip
-        const [onlyFile] = Object.keys(innerZip.files);
-        const onlyBlob = await innerZip.files[onlyFile].async("blob");
-        finalZip.file(onlyFile, onlyBlob);
+        tempFiles[`${file.name.replace(/\.zip$/i, '')}_processed.zip`] = zipBlob;
       }
 
     } else if (/\.(xlsx|xls)$/i.test(file.name)) {
-      // process standalone excel
       const rows = await extractRows(file);
       const dayFiles = await processRowsByDay(rows, customName);
 
@@ -79,14 +69,41 @@ async function handleFiles(event) {
           innerZip.file(`${day}_${customName}.xlsx`, blob);
         }
         const zipBlob = await innerZip.generateAsync({ type: "blob" });
-        finalZip.file(`${file.name.replace(/\.(xlsx|xls)$/i, '')}_processed.zip`, zipBlob);
+        tempFiles[`${file.name.replace(/\.(xlsx|xls)$/i, '')}_processed.zip`] = zipBlob;
       } else if (dayFiles.length === 1) {
-        finalZip.file(`${dayFiles[0].day}_${customName}.xlsx`, dayFiles[0].blob);
+        const fname = `${dayFiles[0].day}_${customName}.xlsx`;
+        if (!tempFiles[fname]) tempFiles[fname] = dayFiles[0].blob;
       }
     }
   }
 
-  // Generate final output
+  // Step 2: Flatten all .zip outputs and extract their contents
+  const finalFiles = {}; // unique { filename: Blob }
+  for (const [fname, blob] of Object.entries(tempFiles)) {
+    if (/\.zip$/i.test(fname)) {
+      const extractedZip = await JSZip.loadAsync(blob);
+      for (const innerName of Object.keys(extractedZip.files)) {
+        if (!/\.xlsx$/i.test(innerName)) continue;
+        if (!finalFiles[innerName]) {
+          finalFiles[innerName] = await extractedZip.files[innerName].async("blob");
+        }
+        // else duplicate -> skip
+      }
+    } else {
+      // direct .xlsx
+      if (!finalFiles[fname]) {
+        finalFiles[fname] = blob;
+      }
+      // else duplicate -> skip
+    }
+  }
+
+  // Step 3: Create the final output zip
+  const finalZip = new JSZip();
+  for (const [fname, blob] of Object.entries(finalFiles)) {
+    finalZip.file(fname, blob);
+  }
+
   const finalBlob = await finalZip.generateAsync({ type: "blob" });
   const url = URL.createObjectURL(finalBlob);
   const btn = document.createElement("a");
@@ -98,6 +115,7 @@ async function handleFiles(event) {
   downloadContainer.appendChild(btn);
 }
 
+// Helpers
 async function extractRows(fileBlob) {
   const data = await fileBlob.arrayBuffer();
   const workbook = XLSX.read(data, { type: "array" });
@@ -132,7 +150,6 @@ async function processRowsByDay(rows, customName) {
   });
 
   const files = [];
-
   for (const day of Object.keys(dayGroups).sort()) {
     const mapped = dayGroups[day];
     const groups = {};
@@ -159,6 +176,7 @@ async function processRowsByDay(rows, customName) {
   return files;
 }
 </script>
+
 
 
 </body>
