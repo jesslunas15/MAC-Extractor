@@ -43,8 +43,7 @@ async function handleFiles(event) {
       // process a .zip file separately
       const parentZip = await JSZip.loadAsync(file);
       const excelFiles = Object.keys(parentZip.files).filter(fn => fn.match(/\.(xlsx|xls)$/i));
-      let innerZip = new JSZip();
-      let fileCount = 0;
+      const innerZip = new JSZip();
 
       for (const filename of excelFiles) {
         const content = await parentZip.files[filename].async("blob");
@@ -53,17 +52,20 @@ async function handleFiles(event) {
 
         for (const {day, blob} of dayFiles) {
           innerZip.file(`${day}_${customName}.xlsx`, blob);
-          fileCount++;
         }
       }
 
-      if (fileCount > 1) {
+      const filesInside = Object.keys(innerZip.files).length;
+
+      if (filesInside > 1) {
+        // Save as a .zip inside the final zip
         const zipBlob = await innerZip.generateAsync({ type: "blob" });
         finalZip.file(`${file.name.replace(/\.zip$/i, '')}_processed.zip`, zipBlob);
-      } else if (fileCount === 1) {
-        // only one file, store directly
-        const content = await innerZip.generateAsync({ type: "blob" });
-        finalZip.file(`${file.name.replace(/\.zip$/i, '')}_${customName}.xlsx`, content);
+      } else if (filesInside === 1) {
+        // Save the single .xlsx directly in the final zip
+        const [onlyFile] = Object.keys(innerZip.files);
+        const onlyBlob = await innerZip.files[onlyFile].async("blob");
+        finalZip.file(onlyFile, onlyBlob);
       }
 
     } else if (/\.(xlsx|xls)$/i.test(file.name)) {
@@ -72,7 +74,7 @@ async function handleFiles(event) {
       const dayFiles = await processRowsByDay(rows, customName);
 
       if (dayFiles.length > 1) {
-        let innerZip = new JSZip();
+        const innerZip = new JSZip();
         for (const {day, blob} of dayFiles) {
           innerZip.file(`${day}_${customName}.xlsx`, blob);
         }
@@ -157,6 +159,7 @@ async function processRowsByDay(rows, customName) {
   return files;
 }
 </script>
+
 
 </body>
 </html>
